@@ -74,7 +74,7 @@ make debug    # GDB 디버그 모드 (포트 1234)
 - [x] **Phase 10** — 멀티태스킹 (`task_t`, `context_switch`, 협력 yield +
       PIT IRQ 기반 선점 라운드로빈, 50ms time slice)
 - [x] **Phase 11** — 유저 모드 + 시스템콜 (Ring 3, GDT user descriptors,
-      TSS, `int 0x80` 시스템콜 디스패처: exit/write/getpid/sleep_ms)
+      TSS, `int 0x80` 시스템콜 디스패처)
 - [ ] **Phase 12** — ELF 로더 + 사용자 프로그램 실행
       (FAT32에서 ELF32 적재 → ring 3 진입, `exec /bin/hello.elf`)
       → **여기까지가 mini-Unix**

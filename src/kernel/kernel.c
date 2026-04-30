@@ -21,7 +21,7 @@ static void print_banner(void) {
     kprint_color(" | |\\/| | | | | | | \\___ \\ \n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint_color(" | |  | | |_| | |_| |___) |\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint_color(" |_|  |_|\\__, |\\___/|____/ \n", VGA_LIGHT_CYAN, VGA_BLACK);
-    kprint_color("          |___/       v2.0 \n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("          |___/       v2.1 \n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint("\n");
 }
 
