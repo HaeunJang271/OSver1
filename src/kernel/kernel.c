@@ -4,8 +4,10 @@
 #include "cpu/isr.h"
 #include "cpu/pic.h"
 #include "drivers/keyboard.h"
+#include "drivers/ata.h"
 #include "mem/pmm.h"
 #include "mem/paging.h"
+#include "fs/fat32.h"
 #include "shell/shell.h"
 
 static void print_banner(void) {
@@ -41,6 +43,15 @@ void kmain(void) {
     kprint(" MB\n");
 
     paging_init();   ok("Paging enabled - first 4 MB identity-mapped");
+
+    ata_init();      ok("ATA driver ready (primary bus, polling PIO)");
+
+    if (fat32_mount(ATA_DRIVE_SLAVE) == 0) {
+        ok("FAT32 mounted on primary slave");
+    } else {
+        kprint_color("[WARN] ", VGA_YELLOW, VGA_BLACK);
+        kprint("FAT32 mount failed (no data disk?) - 'ls/cat' will be unavailable\n");
+    }
 
     __asm__ volatile ("sti");
     ok("Interrupts enabled");

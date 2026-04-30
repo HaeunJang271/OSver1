@@ -1,0 +1,12 @@
+Hello from MyOS FAT32 driver!
+
+This file lives on the secondary IDE disk
+mounted at primary slave (drive 1).
+
+You are reading it through:
+  - ATA PIO sector read (port 0x1F0)
+  - FAT32 BPB parsing
+  - cluster chain traversal
+  - 8.3 short-name directory entries
+
+Welcome to userland-less computing.

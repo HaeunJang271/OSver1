@@ -3,6 +3,7 @@
 #include "../drivers/keyboard.h"
 #include "../mem/pmm.h"
 #include "../mem/paging.h"
+#include "../fs/fat32.h"
 
 #define LINE_MAX  256
 #define ARGS_MAX  16
@@ -69,6 +70,8 @@ static void cmd_meminfo(int, char **);
 static void cmd_page(int, char **);
 static void cmd_vmap(int, char **);
 static void cmd_pftest(int, char **);
+static void cmd_ls(int, char **);
+static void cmd_cat(int, char **);
 static void cmd_version(int, char **);
 static void cmd_halt(int, char **);
 
@@ -80,6 +83,8 @@ static const cmd_t cmds[] = {
     { "page",    "alloc / free a page      page alloc|free <addr>", cmd_page },
     { "vmap",    "show v->p mapping        vmap <virt>",         cmd_vmap    },
     { "pf-test", "trigger a page fault",                         cmd_pftest  },
+    { "ls",      "list files in root (FAT32)",                   cmd_ls      },
+    { "cat",     "print a file             cat <name>",          cmd_cat     },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
 };
@@ -198,13 +203,88 @@ static void cmd_pftest(int argc, char **argv) {
     kprint("(unreachable)\n");
 }
 
+/* ── FAT32 셸 명령 ─────────────────────────────────────────────────────── */
+
+/* "FOO     TXT" → "FOO.TXT" 의 출력용 변환 (12바이트 + NUL) */
+static void short_name_to_str(const uint8_t raw[11], char out[13]) {
+    int n = 0;
+    for (int i = 0; i < 8 && raw[i] != ' '; i++) out[n++] = (char)raw[i];
+    if (raw[8] != ' ') {
+        out[n++] = '.';
+        for (int i = 8; i < 11 && raw[i] != ' '; i++) out[n++] = (char)raw[i];
+    }
+    out[n] = '\0';
+}
+
+static void ls_visitor(const fat32_dirent_t *e, void *ctx) {
+    (void)ctx;
+    char name[13];
+    short_name_to_str(e->name, name);
+
+    if (e->attr & FAT_ATTR_DIRECTORY) {
+        kprint_color("  <DIR>  ", VGA_LIGHT_CYAN, VGA_BLACK);
+        kprint(name);
+        kprint("\n");
+    } else {
+        kprint("         ");
+        kprint(name);
+        int pad = 14 - str_len(name);
+        for (int i = 0; i < pad; i++) kputchar(' ');
+        kprint_dec(e->size);
+        kprint(" bytes\n");
+    }
+}
+
+static void cmd_ls(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    fat32_listdir(fat32_root_cluster(), ls_visitor, 0);
+}
+
+#define CAT_BUF_SIZE 16384      /* 최대 16KB 텍스트 표시 */
+static uint8_t cat_buf[CAT_BUF_SIZE];
+
+static void cmd_cat(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: cat <name>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
+    fat32_dirent_t e;
+    if (fat32_find_in_root(argv[1], &e) < 0) {
+        kprint_color("not found: ", VGA_LIGHT_RED, VGA_BLACK);
+        kprint(argv[1]); kprint("\n");
+        return;
+    }
+    if (e.attr & FAT_ATTR_DIRECTORY) {
+        kprint_color("is a directory\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
+    int n = fat32_read_file(&e, cat_buf, CAT_BUF_SIZE);
+    if (n < 0) {
+        kprint_color("read error\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        char c = (char)cat_buf[i];
+        if (c == '\r') continue;          /* CRLF → LF */
+        kputchar(c);
+    }
+    if (n > 0 && cat_buf[n - 1] != '\n') kputchar('\n');
+}
+
 /* version */
 static void cmd_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprint_color("MyOS v0.4\n", VGA_LIGHT_CYAN, VGA_BLACK);
-    kprint("  Arch  : x86 (i686), 32-bit protected mode\n");
+    kprint_color("MyOS v0.7\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint("  Arch  : x86 (i686), 32-bit protected mode + paging\n");
     kprint("  Kernel: custom bootloader + C kernel\n");
-    kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell\n");
+    kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell / paging / FAT32\n");
 }
 
 /* halt */

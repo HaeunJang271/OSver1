@@ -17,12 +17,14 @@ BUILD := build
 C_SRCS := src/kernel/kernel.c      \
           src/drivers/screen.c     \
           src/drivers/keyboard.c   \
+          src/drivers/ata.c        \
           src/cpu/gdt.c            \
           src/cpu/idt.c            \
           src/cpu/isr.c            \
           src/cpu/pic.c            \
           src/mem/pmm.c            \
           src/mem/paging.c         \
+          src/fs/fat32.c           \
           src/shell/shell.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)
@@ -35,11 +37,12 @@ CPU_ASM_OBJS := $(patsubst src/%.asm, $(BUILD)/%.o, $(CPU_ASM_SRCS))
 KENTRY_OBJ  := $(BUILD)/kernel_entry.o
 
 # ─── Build dirs ───────────────────────────────────────────────────────────────
-BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem $(BUILD)/shell
+BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem \
+              $(BUILD)/fs $(BUILD)/shell
 
-.PHONY: all run run-vnc debug clean
+.PHONY: all run run-vnc debug clean data
 
-all: $(BUILD)/os.img
+all: $(BUILD)/os.img $(BUILD)/data.img
 
 $(BUILD_DIRS):
 	mkdir -p $@
@@ -69,6 +72,9 @@ $(BUILD)/cpu/%.o: src/cpu/%.c | $(BUILD_DIRS)
 $(BUILD)/mem/%.o: src/mem/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(BUILD)/fs/%.o: src/fs/%.c | $(BUILD_DIRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(BUILD)/shell/%.o: src/shell/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -86,18 +92,32 @@ $(BUILD)/os.img: $(BUILD)/boot.bin $(BUILD)/kernel.bin
 	dd if=$(BUILD)/kernel.bin of=$@ seek=1 conv=notrunc  2>/dev/null
 	@echo "Built: $@"
 
-# ─── Run ──────────────────────────────────────────────────────────────────────
-QEMU_DRIVE := -drive file=$(BUILD)/os.img,format=raw,if=ide
+# ─── FAT32 데이터 디스크 (64 MB, secondary IDE) ───────────────────────────────
+# 필요 도구: dosfstools(mkfs.fat) + mtools(mcopy)
+#   sudo apt install dosfstools mtools
+DATA_FILES := $(wildcard disk_files/*)
 
-run: $(BUILD)/os.img
+$(BUILD)/data.img: $(DATA_FILES) | $(BUILD_DIRS)
+	dd if=/dev/zero of=$@ bs=1M count=64 status=none
+	mkfs.fat -F 32 -n MYOSDATA $@ >/dev/null
+	@for f in $(DATA_FILES); do mcopy -i $@ "$$f" ::; done
+	@echo "Built: $@  (FAT32 64MB)"
+
+data: $(BUILD)/data.img
+
+# ─── Run ──────────────────────────────────────────────────────────────────────
+QEMU_DRIVE := -drive file=$(BUILD)/os.img,format=raw,if=ide \
+              -drive file=$(BUILD)/data.img,format=raw,if=ide
+
+run: $(BUILD)/os.img $(BUILD)/data.img
 	$(QEMU) $(QEMU_DRIVE) -display sdl -monitor stdio
 
 # VNC fallback — connect with any VNC viewer to 127.0.0.1:5900
-run-vnc: $(BUILD)/os.img
+run-vnc: $(BUILD)/os.img $(BUILD)/data.img
 	@echo "VNC 뷰어로 127.0.0.1:5900 에 접속하세요"
 	$(QEMU) $(QEMU_DRIVE) -display vnc=127.0.0.1:0 -monitor stdio
 
-debug: $(BUILD)/os.img
+debug: $(BUILD)/os.img $(BUILD)/data.img
 	@echo "다른 터미널에서: gdb -ex 'target remote :1234'"
 	$(QEMU) $(QEMU_DRIVE) -display sdl -s -S -monitor stdio
 
