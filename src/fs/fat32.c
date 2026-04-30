@@ -653,3 +653,37 @@ int fat32_chdir(const char *name) {
     fs.cwd_cluster = c;
     return 0;
 }
+
+/* 토큰별 chdir. '/' 로 시작하면 root 에서 출발. 빈 토큰("//") 은 스킵. */
+int fat32_chdir_path(const char *path) {
+    if (!fs.mounted) return -1;
+
+    const char *p = path;
+    if (p[0] == '/') {
+        fs.cwd_cluster = fs.root_cluster;
+        p++;
+    }
+
+    char tok[16];
+    int  ti = 0;
+    while (1) {
+        if (*p == '/' || *p == '\0') {
+            if (ti > 0) {
+                tok[ti] = '\0';
+                if (fat32_chdir(tok) < 0) return -1;
+                ti = 0;
+            }
+            if (*p == '\0') return 0;
+            p++;
+        } else {
+            if (ti < 15) tok[ti++] = *p;
+            p++;
+        }
+    }
+}
+
+void fat32_set_cwd_cluster(uint32_t cluster) {
+    if (!fs.mounted) return;
+    if (cluster < 2) cluster = fs.root_cluster;
+    fs.cwd_cluster = cluster;
+}

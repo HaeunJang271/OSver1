@@ -90,14 +90,14 @@ static const cmd_t cmds[] = {
     { "page",    "alloc / free a page      page alloc|free <addr>", cmd_page },
     { "vmap",    "show v->p mapping        vmap <virt>",         cmd_vmap    },
     { "pf-test", "trigger a page fault",                         cmd_pftest  },
-    { "ls",      "list files in current dir",                    cmd_ls      },
-    { "cat",     "print a file             cat <name>",          cmd_cat     },
-    { "touch",   "create empty file        touch <name>",        cmd_touch   },
-    { "write",   "overwrite file content   write <name> <text>", cmd_write   },
-    { "rm",      "delete a file            rm <name>",           cmd_rm      },
-    { "mkdir",   "create a directory       mkdir <name>",        cmd_mkdir   },
-    { "rmdir",   "remove an empty dir      rmdir <name>",        cmd_rmdir   },
-    { "cd",      "change directory         cd <name>|..|/",      cmd_cd      },
+    { "ls",      "list files               ls [path]",           cmd_ls      },
+    { "cat",     "print a file             cat <path>",          cmd_cat     },
+    { "touch",   "create empty file        touch <path>",        cmd_touch   },
+    { "write",   "overwrite file content   write <path> <text>", cmd_write   },
+    { "rm",      "delete a file            rm <path>",           cmd_rm      },
+    { "mkdir",   "create a directory       mkdir <path>",        cmd_mkdir   },
+    { "rmdir",   "remove an empty dir      rmdir <path>",        cmd_rmdir   },
+    { "cd",      "change directory         cd <path> | .. | /",  cmd_cd      },
     { "pwd",     "print current path",                           cmd_pwd     },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
@@ -249,27 +249,115 @@ static void ls_visitor(const fat32_dirent_t *e, void *ctx) {
     }
 }
 
+/* ── 깊은 경로 처리 헬퍼 ─────────────────────────────────────────────────── */
+
+/* path 를 분해해 마지막 토큰 직전까지 cwd 를 이동시키고, 마지막 토큰을
+   basename 에 복사한다. 호출자는 작업 후 fat32_set_cwd_cluster(saved) 로
+   원래 cwd 로 복원해야 한다.
+
+   path 예시:
+     "foo.txt"        → cwd 그대로,        basename = "foo.txt"
+     "a/b/foo.txt"    → cwd → a → b,       basename = "foo.txt"
+     "/a/b/foo.txt"   → cwd → root → a → b, basename = "foo.txt"
+     "/" 또는 ""       → basename = ""  (호출자가 빈 검사)
+   성공 0, 실패 -1 (이 경우 cwd 가 부분 이동된 상태일 수 있음). */
+static int path_descend(const char *path, char basename[16]) {
+    const char *p = path;
+    if (p[0] == '/') {
+        fat32_chdir("/");
+        p++;
+    }
+
+    char prev[16];
+    int  prev_set = 0;
+    char cur[16];
+    int  ci = 0;
+
+    while (1) {
+        if (*p == '/' || *p == '\0') {
+            if (ci > 0) {
+                cur[ci] = '\0';
+                if (prev_set) {
+                    if (fat32_chdir(prev) < 0) return -1;
+                }
+                for (int i = 0; i <= ci; i++) prev[i] = cur[i];
+                prev_set = 1;
+                ci = 0;
+            }
+            if (*p == '\0') break;
+            p++;
+        } else {
+            if (ci < 15) cur[ci++] = *p;
+            p++;
+        }
+    }
+
+    if (prev_set) {
+        for (int i = 0; ; i++) {
+            basename[i] = prev[i];
+            if (!prev[i]) break;
+        }
+    } else {
+        basename[0] = '\0';
+    }
+    return 0;
+}
+
+/* path → 부모로 cwd 이동 + basename 추출. 실패하면 cwd 복원하고 -1. */
+static int path_to_parent_and_base(const char *path,
+                                   uint32_t *saved_out,
+                                   char basename[16]) {
+    *saved_out = fat32_cwd_cluster();
+    if (path_descend(path, basename) < 0 || basename[0] == '\0') {
+        fat32_set_cwd_cluster(*saved_out);
+        return -1;
+    }
+    return 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
+
 static void cmd_ls(int argc, char **argv) {
-    (void)argc; (void)argv;
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
+
+    uint32_t saved = fat32_cwd_cluster();
+    if (argc >= 2) {
+        if (fat32_chdir_path(argv[1]) < 0) {
+            fat32_set_cwd_cluster(saved);
+            kprint_color("ls: not a directory or not found: ",
+                         VGA_LIGHT_RED, VGA_BLACK);
+            kprint(argv[1]); kprint("\n");
+            return;
+        }
+    }
     fat32_listdir(fat32_cwd_cluster(), ls_visitor, 0);
+    fat32_set_cwd_cluster(saved);
 }
 
 #define CAT_BUF_SIZE 16384      /* 최대 16KB 텍스트 표시 */
 static uint8_t cat_buf[CAT_BUF_SIZE];
 
 static void cmd_cat(int argc, char **argv) {
-    if (argc < 2) { kprint("usage: cat <name>\n"); return; }
+    if (argc < 2) { kprint("usage: cat <path>\n"); return; }
     if (!fat32_is_mounted()) {
-        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK);
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("cat: invalid path\n", VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
 
     fat32_dirent_t e;
-    if (fat32_find(argv[1], &e) < 0) {
+    int find_rc = fat32_find(base, &e);
+    fat32_set_cwd_cluster(saved);
+
+    if (find_rc < 0) {
         kprint_color("not found: ", VGA_LIGHT_RED, VGA_BLACK);
         kprint(argv[1]); kprint("\n");
         return;
@@ -292,26 +380,33 @@ static void cmd_cat(int argc, char **argv) {
     if (n > 0 && cat_buf[n - 1] != '\n') kputchar('\n');
 }
 
-/* touch <name> — 빈 파일 생성 */
+/* touch <path> — 빈 파일 생성 */
 static void cmd_touch(int argc, char **argv) {
-    if (argc < 2) { kprint("usage: touch <name>\n"); return; }
+    if (argc < 2) { kprint("usage: touch <path>\n"); return; }
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
-    if (fat32_create(argv[1]) < 0) {
-        kprint_color("touch failed (already exists or root full)\n",
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("touch: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    int r = fat32_create(base);
+    fat32_set_cwd_cluster(saved);
+    if (r < 0) {
+        kprint_color("touch failed (exists or directory full)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
     kprint("created: "); kprint(argv[1]); kprint("\n");
 }
 
-/* write <name> <text...> — argv[2..] 를 공백으로 합쳐 파일에 덮어쓰기 */
+/* write <path> <text...> — argv[2..] 를 공백으로 합쳐 파일에 덮어쓰기 */
 #define WRITE_BUF_SIZE 8192
 static uint8_t write_buf[WRITE_BUF_SIZE];
 
 static void cmd_write(int argc, char **argv) {
-    if (argc < 3) { kprint("usage: write <name> <text...>\n"); return; }
+    if (argc < 3) { kprint("usage: write <path> <text...>\n"); return; }
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
@@ -324,8 +419,15 @@ static void cmd_write(int argc, char **argv) {
     }
     if (len < WRITE_BUF_SIZE) write_buf[len++] = '\n';
 
-    if (fat32_write_file(argv[1], write_buf, len) < 0) {
-        kprint_color("write failed (disk full or root full?)\n",
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("write: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    int r = fat32_write_file(base, write_buf, len);
+    fat32_set_cwd_cluster(saved);
+    if (r < 0) {
+        kprint_color("write failed (disk or directory full?)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
@@ -333,13 +435,20 @@ static void cmd_write(int argc, char **argv) {
     kprint(" bytes to "); kprint(argv[1]); kprint("\n");
 }
 
-/* rm <name> — 파일 삭제 */
+/* rm <path> — 파일 삭제 */
 static void cmd_rm(int argc, char **argv) {
-    if (argc < 2) { kprint("usage: rm <name>\n"); return; }
+    if (argc < 2) { kprint("usage: rm <path>\n"); return; }
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
-    if (fat32_remove(argv[1]) < 0) {
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("rm: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    int r = fat32_remove(base);
+    fat32_set_cwd_cluster(saved);
+    if (r < 0) {
         kprint_color("rm failed (not found, or it's a directory?)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
         return;
@@ -393,11 +502,18 @@ static void path_pop(void) {
 }
 
 static void cmd_mkdir(int argc, char **argv) {
-    if (argc < 2) { kprint("usage: mkdir <name>\n"); return; }
+    if (argc < 2) { kprint("usage: mkdir <path>\n"); return; }
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
-    if (fat32_mkdir(argv[1]) < 0) {
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("mkdir: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    int r = fat32_mkdir(base);
+    fat32_set_cwd_cluster(saved);
+    if (r < 0) {
         kprint_color("mkdir failed (exists, full, or out of space)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
         return;
@@ -406,11 +522,18 @@ static void cmd_mkdir(int argc, char **argv) {
 }
 
 static void cmd_rmdir(int argc, char **argv) {
-    if (argc < 2) { kprint("usage: rmdir <name>\n"); return; }
+    if (argc < 2) { kprint("usage: rmdir <path>\n"); return; }
     if (!fat32_is_mounted()) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
-    if (fat32_rmdir(argv[1]) < 0) {
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("rmdir: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    int r = fat32_rmdir(base);
+    fat32_set_cwd_cluster(saved);
+    if (r < 0) {
         kprint_color("rmdir failed (not a dir, or not empty)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
         return;
@@ -424,19 +547,55 @@ static void cmd_cd(int argc, char **argv) {
     }
     const char *target = (argc < 2) ? "/" : argv[1];
 
-    if (fat32_chdir(target) < 0) {
-        kprint_color("cd failed: ", VGA_LIGHT_RED, VGA_BLACK);
-        kprint(target); kprint("\n");
-        return;
+    /* 실패 시 복원할 cwd + path 저장 */
+    uint32_t saved_cluster = fat32_cwd_cluster();
+    char saved_path[CWD_PATH_MAX];
+    for (int i = 0; ; i++) {
+        saved_path[i] = cwd_path[i];
+        if (!cwd_path[i]) break;
     }
 
-    /* path 문자열 갱신 */
-    if (target[0] == '/' && target[1] == '\0') {
+    /* 절대 경로면 root 부터 시작 */
+    const char *p = target;
+    if (p[0] == '/') {
+        fat32_chdir("/");
         cwd_path[0] = '/'; cwd_path[1] = '\0';
-    } else if (target[0] == '.' && target[1] == '.' && target[2] == '\0') {
-        path_pop();
-    } else if (!(target[0] == '.' && target[1] == '\0')) {
-        path_push(target);
+        p++;
+    }
+
+    /* 토큰별 chdir + path 갱신 */
+    char tok[16];
+    int  ti = 0;
+    while (1) {
+        if (*p == '/' || *p == '\0') {
+            if (ti > 0) {
+                tok[ti] = '\0';
+                if (fat32_chdir(tok) < 0) {
+                    /* 원자적으로 원위치 복원 */
+                    fat32_set_cwd_cluster(saved_cluster);
+                    for (int i = 0; ; i++) {
+                        cwd_path[i] = saved_path[i];
+                        if (!saved_path[i]) break;
+                    }
+                    kprint_color("cd failed: ", VGA_LIGHT_RED, VGA_BLACK);
+                    kprint(target); kprint("\n");
+                    return;
+                }
+                if (tok[0] == '.' && tok[1] == '\0') {
+                    /* "." → 변화 없음 */
+                } else if (tok[0] == '.' && tok[1] == '.' && tok[2] == '\0') {
+                    path_pop();
+                } else {
+                    path_push(tok);
+                }
+                ti = 0;
+            }
+            if (*p == '\0') return;
+            p++;
+        } else {
+            if (ti < 15) tok[ti++] = *p;
+            p++;
+        }
     }
 }
 

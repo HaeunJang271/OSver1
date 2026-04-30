@@ -73,9 +73,18 @@ int fat32_rmdir(const char *name);
 /* 현재 디렉토리의 시작 클러스터 (마운트 시 root_cluster) */
 uint32_t fat32_cwd_cluster(void);
 
-/* cwd 변경. 다음 형태 모두 지원:
+/* cwd 변경. 한 컴포넌트(슬래시 없음)만 받는다:
      "/"      → 루트
      ".."     → 부모 ( cwd 가 이미 루트면 그대로 )
      "<dir>"  → 현재 디렉토리의 하위 디렉토리로 진입
    대상이 디렉토리가 아니면 -1. 성공 0. */
 int  fat32_chdir(const char *name);
+
+/* path 의 모든 토큰("/a/b/c" 또는 "a/b") 을 차례로 chdir.
+   '/'로 시작하면 root 부터, 아니면 현재 cwd 부터.
+   도중 실패 시 cwd 가 부분 이동된 채로 -1 반환 (호출자가 복원해야 함). */
+int  fat32_chdir_path(const char *path);
+
+/* cwd 를 cluster 번호로 직접 설정 (저장/복원용 저수준 API).
+   0 또는 1 을 주면 root 로 보정. 검증 안 하므로 외부에서 신중히. */
+void fat32_set_cwd_cluster(uint32_t cluster);
