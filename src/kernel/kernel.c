@@ -1,4 +1,8 @@
 #include "drivers/screen.h"
+#include "cpu/gdt.h"
+#include "cpu/idt.h"
+#include "cpu/isr.h"
+#include "cpu/pic.h"
 
 static void print_banner(void) {
     kprint_color("  __  __       ___  ____  \n", VGA_LIGHT_CYAN, VGA_BLACK);
@@ -6,7 +10,13 @@ static void print_banner(void) {
     kprint_color(" | |\\/| | | | | | | \\___ \\ \n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint_color(" | |  | | |_| | |_| |___) |\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint_color(" |_|  |_|\\__, |\\___/|____/ \n", VGA_LIGHT_CYAN, VGA_BLACK);
-    kprint_color("          |___/       v0.1  \n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("          |___/       v0.2  \n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint("\n");
+}
+
+static void ok(const char *msg) {
+    kprint_color("[ OK ] ", VGA_LIGHT_GREEN, VGA_BLACK);
+    kprint(msg);
     kprint("\n");
 }
 
@@ -14,22 +24,16 @@ void kmain(void) {
     clear_screen();
     print_banner();
 
-    kprint_color("[ OK ] ", VGA_LIGHT_GREEN, VGA_BLACK);
-    kprint("Bootloader complete\n");
+    gdt_init();  ok("GDT loaded (null / kernel code / kernel data)");
+    pic_init();  ok("PIC remapped  - IRQs mapped to INT 32-47");
+    idt_init();  ok("IDT loaded    - 32 exceptions + 16 IRQ gates");
 
-    kprint_color("[ OK ] ", VGA_LIGHT_GREEN, VGA_BLACK);
-    kprint("32-bit protected mode active\n");
-
-    kprint_color("[ OK ] ", VGA_LIGHT_GREEN, VGA_BLACK);
-    kprint("VGA text driver ready\n");
+    __asm__ volatile ("sti");
+    ok("Interrupts enabled");
 
     kprint("\n");
-    kprint_color("Kernel loaded at: ", VGA_LIGHT_GREY, VGA_BLACK);
-    kprint_hex(0x10000);
-    kprint("\n");
+    kprint_color("MyOS v0.2 - system ready\n", VGA_YELLOW, VGA_BLACK);
+    kprint("Unhandled exceptions will be caught and reported.\n");
 
-    kprint("\n");
-    kprint_color("MyOS is running. More features coming soon!\n", VGA_YELLOW, VGA_BLACK);
-
-    for (;;) {}
+    for (;;) __asm__ volatile ("hlt");
 }
