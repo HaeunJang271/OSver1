@@ -22,6 +22,7 @@ C_SRCS := src/kernel/kernel.c      \
           src/cpu/isr.c            \
           src/cpu/pic.c            \
           src/mem/pmm.c            \
+          src/mem/paging.c         \
           src/shell/shell.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)

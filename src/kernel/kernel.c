@@ -5,6 +5,7 @@
 #include "cpu/pic.h"
 #include "drivers/keyboard.h"
 #include "mem/pmm.h"
+#include "mem/paging.h"
 #include "shell/shell.h"
 
 static void print_banner(void) {
@@ -38,6 +39,8 @@ void kmain(void) {
     kprint(" MB / total: ");
     kprint_dec(pmm_total_pages() * 4 / 1024);
     kprint(" MB\n");
+
+    paging_init();   ok("Paging enabled - first 4 MB identity-mapped");
 
     __asm__ volatile ("sti");
     ok("Interrupts enabled");

@@ -22,7 +22,7 @@ SECTIONS {
         *(.data)
     }
 
-    .bss ALIGN(4) : {
+    .bss ALIGN(4096) : {
         bss_start = .;      /* kernel_entry.asm uses these to zero BSS */
         *(COMMON)
         *(.bss)

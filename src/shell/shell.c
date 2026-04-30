@@ -2,6 +2,7 @@
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
 #include "../mem/pmm.h"
+#include "../mem/paging.h"
 
 #define LINE_MAX  256
 #define ARGS_MAX  16
@@ -66,6 +67,8 @@ static void cmd_clear(int, char **);
 static void cmd_echo(int, char **);
 static void cmd_meminfo(int, char **);
 static void cmd_page(int, char **);
+static void cmd_vmap(int, char **);
+static void cmd_pftest(int, char **);
 static void cmd_version(int, char **);
 static void cmd_halt(int, char **);
 
@@ -75,6 +78,8 @@ static const cmd_t cmds[] = {
     { "echo",    "print text                echo <text>",        cmd_echo    },
     { "meminfo", "show memory usage",                            cmd_meminfo },
     { "page",    "alloc / free a page      page alloc|free <addr>", cmd_page },
+    { "vmap",    "show v->p mapping        vmap <virt>",         cmd_vmap    },
+    { "pf-test", "trigger a page fault",                         cmd_pftest  },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
 };
@@ -164,6 +169,33 @@ static void cmd_page(int argc, char **argv) {
     } else {
         kprint("usage: page alloc | page free <addr>\n");
     }
+}
+
+/* vmap <virt> — 가상 주소의 매핑 조회 */
+static void cmd_vmap(int argc, char **argv) {
+    if (argc < 2) {
+        kprint("usage: vmap <virt>\n");
+        return;
+    }
+    uint32_t v = parse_uint(argv[1]);
+    uint32_t p = vmm_get_phys(v);
+    kprint("virt "); kprint_hex(v);
+    if (p == 0xFFFFFFFFu) {
+        kprint_color(" -> (unmapped)\n", VGA_LIGHT_RED, VGA_BLACK);
+    } else {
+        kprint(" -> phys "); kprint_hex(p); kprint("\n");
+    }
+}
+
+/* pf-test — 매핑 없는 주소 읽기로 페이지 폴트 유발 */
+static void cmd_pftest(int argc, char **argv) {
+    (void)argc; (void)argv;
+    kprint_color("Triggering page fault at 0xDEADC000 ...\n",
+                 VGA_LIGHT_RED, VGA_BLACK);
+    volatile uint32_t *bad = (volatile uint32_t *)0xDEADC000u;
+    volatile uint32_t  v   = *bad;     /* PF! */
+    (void)v;
+    kprint("(unreachable)\n");
 }
 
 /* version */
