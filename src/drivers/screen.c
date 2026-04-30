@@ -44,6 +44,12 @@ void kputchar_color(char c, unsigned char fg, unsigned char bg) {
         cur_col = 0;
     } else if (c == '\t') {
         cur_col = (cur_col + 8) & ~7;
+    } else if (c == '\b') {
+        if (cur_col > 0) { cur_col--; }
+        else if (cur_row > 0) { cur_row--; cur_col = COLS - 1; }
+        int pos = (cur_row * COLS + cur_col) * 2;
+        VGA_BASE[pos] = ' '; VGA_BASE[pos + 1] = attr;
+        return;
     } else {
         int pos = (cur_row * COLS + cur_col) * 2;
         VGA_BASE[pos]     = (unsigned char)c;
@@ -90,4 +96,9 @@ void kprint_dec(unsigned int n) {
         n /= 10;
     }
     kprint(buf + i);
+}
+
+void kget_cursor(int *col, int *row) {
+    *col = cur_col;
+    *row = cur_row;
 }

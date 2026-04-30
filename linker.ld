@@ -8,7 +8,6 @@ ENTRY(_start)
 SECTIONS {
     . = 0x10000;
 
-    /* kernel_entry.o must be first so _start lands exactly at 0x10000 */
     .text ALIGN(4) : {
         *(.text)
         *(.text.*)
@@ -24,7 +23,10 @@ SECTIONS {
     }
 
     .bss ALIGN(4) : {
+        bss_start = .;      /* kernel_entry.asm uses these to zero BSS */
         *(COMMON)
         *(.bss)
+        . = ALIGN(4);
+        bss_end = .;
     }
 }

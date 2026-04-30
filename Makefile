@@ -14,12 +14,14 @@ LDFLAGS := -T linker.ld -melf_i386 --no-pie
 # ─── Source files ─────────────────────────────────────────────────────────────
 BUILD := build
 
-C_SRCS := src/kernel/kernel.c   \
-          src/drivers/screen.c  \
-          src/cpu/gdt.c         \
-          src/cpu/idt.c         \
-          src/cpu/isr.c         \
-          src/cpu/pic.c
+C_SRCS := src/kernel/kernel.c      \
+          src/drivers/screen.c     \
+          src/drivers/keyboard.c   \
+          src/cpu/gdt.c            \
+          src/cpu/idt.c            \
+          src/cpu/isr.c            \
+          src/cpu/pic.c            \
+          src/mem/pmm.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)
 CPU_ASM_SRCS := src/cpu/gdt_flush.asm \
@@ -31,7 +33,7 @@ CPU_ASM_OBJS := $(patsubst src/%.asm, $(BUILD)/%.o, $(CPU_ASM_SRCS))
 KENTRY_OBJ  := $(BUILD)/kernel_entry.o
 
 # ─── Build dirs ───────────────────────────────────────────────────────────────
-BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu
+BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem
 
 .PHONY: all run run-vnc debug clean
 
@@ -60,6 +62,9 @@ $(BUILD)/drivers/%.o: src/drivers/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/cpu/%.o: src/cpu/%.c | $(BUILD_DIRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/mem/%.o: src/mem/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # ─── Link ─────────────────────────────────────────────────────────────────────

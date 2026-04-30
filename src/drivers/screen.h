@@ -29,3 +29,4 @@ void kprint(const char *str);
 void kprint_color(const char *str, unsigned char fg, unsigned char bg);
 void kprint_hex(unsigned int n);
 void kprint_dec(unsigned int n);
+void kget_cursor(int *col, int *row);
