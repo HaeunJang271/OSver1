@@ -1,4 +1,5 @@
 #include "screen.h"
+#include "serial.h"
 
 #define VGA_BASE   ((volatile unsigned char *)0xB8000)
 #define COLS       80
@@ -37,6 +38,8 @@ void clear_screen(void) {
 
 void kputchar_color(char c, unsigned char fg, unsigned char bg) {
     unsigned char attr = vga_color(fg, bg);
+    /* 시리얼 콘솔에도 그대로 미러링 — serial_init 이전에는 무시됨 */
+    serial_putc(c);
     if (c == '\n') {
         cur_col = 0;
         cur_row++;

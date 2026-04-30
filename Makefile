@@ -16,21 +16,29 @@ BUILD := build
 
 C_SRCS := src/kernel/kernel.c      \
           src/drivers/screen.c     \
+          src/drivers/serial.c     \
+          src/drivers/timer.c      \
           src/drivers/keyboard.c   \
           src/drivers/ata.c        \
           src/cpu/gdt.c            \
           src/cpu/idt.c            \
           src/cpu/isr.c            \
           src/cpu/pic.c            \
+          src/cpu/tss.c            \
           src/mem/pmm.c            \
           src/mem/paging.c         \
+          src/mem/kheap.c          \
           src/fs/fat32.c           \
+          src/proc/task.c          \
+          src/proc/syscall.c       \
+          src/proc/user_demo.c     \
           src/shell/shell.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)
 CPU_ASM_SRCS := src/cpu/gdt_flush.asm \
                 src/cpu/idt_flush.asm  \
-                src/cpu/isr_stubs.asm
+                src/cpu/isr_stubs.asm \
+                src/proc/switch.asm
 
 C_OBJS      := $(patsubst src/%.c,   $(BUILD)/%.o, $(C_SRCS))
 CPU_ASM_OBJS := $(patsubst src/%.asm, $(BUILD)/%.o, $(CPU_ASM_SRCS))
@@ -38,7 +46,7 @@ KENTRY_OBJ  := $(BUILD)/kernel_entry.o
 
 # ─── Build dirs ───────────────────────────────────────────────────────────────
 BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem \
-              $(BUILD)/fs $(BUILD)/shell
+              $(BUILD)/fs $(BUILD)/proc $(BUILD)/shell
 
 .PHONY: all run run-vnc debug clean data
 
@@ -55,8 +63,11 @@ $(BUILD)/boot.bin: src/boot/boot.asm | $(BUILD_DIRS)
 $(KENTRY_OBJ): src/kernel/kernel_entry.asm | $(BUILD_DIRS)
 	$(ASM) -f elf32 -o $@ $<
 
-# ─── CPU assembly stubs ───────────────────────────────────────────────────────
+# ─── CPU / proc assembly stubs ────────────────────────────────────────────────
 $(BUILD)/cpu/%.o: src/cpu/%.asm | $(BUILD_DIRS)
+	$(ASM) -f elf32 -o $@ $<
+
+$(BUILD)/proc/%.o: src/proc/%.asm | $(BUILD_DIRS)
 	$(ASM) -f elf32 -o $@ $<
 
 # ─── C sources ────────────────────────────────────────────────────────────────
@@ -73,6 +84,9 @@ $(BUILD)/mem/%.o: src/mem/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/fs/%.o: src/fs/%.c | $(BUILD_DIRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/proc/%.o: src/proc/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/shell/%.o: src/shell/%.c | $(BUILD_DIRS)
@@ -109,17 +123,22 @@ data: $(BUILD)/data.img
 QEMU_DRIVE := -drive file=$(BUILD)/os.img,format=raw,if=ide \
               -drive file=$(BUILD)/data.img,format=raw,if=ide
 
+# `run` — SDL 창에 화면, 호스트 터미널엔 시리얼 콘솔(부팅 로그/uptime/디버그) 미러링
 run: $(BUILD)/os.img $(BUILD)/data.img
-	$(QEMU) $(QEMU_DRIVE) -display sdl -monitor stdio
+	$(QEMU) $(QEMU_DRIVE) -display sdl -serial stdio
 
-# VNC fallback — connect with any VNC viewer to 127.0.0.1:5900
+# VNC fallback — VNC viewer 로 127.0.0.1:5900 접속.
+# stdio 는 monitor 가 잡고 있으므로 시리얼은 파일로 떨어뜨린다.
 run-vnc: $(BUILD)/os.img $(BUILD)/data.img
 	@echo "VNC 뷰어로 127.0.0.1:5900 에 접속하세요"
-	$(QEMU) $(QEMU_DRIVE) -display vnc=127.0.0.1:0 -monitor stdio
+	@echo "시리얼 로그: $(BUILD)/serial.log"
+	$(QEMU) $(QEMU_DRIVE) -display vnc=127.0.0.1:0 -monitor stdio \
+	    -serial file:$(BUILD)/serial.log
 
 debug: $(BUILD)/os.img $(BUILD)/data.img
 	@echo "다른 터미널에서: gdb -ex 'target remote :1234'"
-	$(QEMU) $(QEMU_DRIVE) -display sdl -s -S -monitor stdio
+	$(QEMU) $(QEMU_DRIVE) -display sdl -s -S -monitor stdio \
+	    -serial file:$(BUILD)/serial.log
 
 # ─── Clean ────────────────────────────────────────────────────────────────────
 clean:

@@ -1,9 +1,12 @@
 #include "shell.h"
 #include "../drivers/screen.h"
 #include "../drivers/keyboard.h"
+#include "../drivers/timer.h"
 #include "../mem/pmm.h"
 #include "../mem/paging.h"
+#include "../mem/kheap.h"
 #include "../fs/fat32.h"
+#include "../proc/task.h"
 
 #define LINE_MAX  256
 #define ARGS_MAX  16
@@ -79,8 +82,19 @@ static void cmd_mkdir(int, char **);
 static void cmd_rmdir(int, char **);
 static void cmd_cd(int, char **);
 static void cmd_pwd(int, char **);
+static void cmd_uptime(int, char **);
+static void cmd_sleep(int, char **);
+static void cmd_heap(int, char **);
+static void cmd_kalloc(int, char **);
+static void cmd_tasks(int, char **);
+static void cmd_spawn(int, char **);
+static void cmd_yield(int, char **);
+static void cmd_user(int, char **);
 static void cmd_version(int, char **);
 static void cmd_halt(int, char **);
+
+/* user-mode 데모 entry — src/proc/user_demo.c */
+extern void user_demo_entry(void);
 
 static const cmd_t cmds[] = {
     { "help",    "show this command list",                       cmd_help    },
@@ -99,6 +113,14 @@ static const cmd_t cmds[] = {
     { "rmdir",   "remove an empty dir      rmdir <path>",        cmd_rmdir   },
     { "cd",      "change directory         cd <path> | .. | /",  cmd_cd      },
     { "pwd",     "print current path",                           cmd_pwd     },
+    { "uptime",  "show how long the system has been up",         cmd_uptime  },
+    { "sleep",   "wait N seconds            sleep <seconds>",    cmd_sleep   },
+    { "heap",    "show kernel heap stats",                       cmd_heap    },
+    { "kalloc",  "kmalloc/kfree test        kalloc alloc <n> | kalloc free <addr>", cmd_kalloc },
+    { "tasks",   "list scheduled tasks",                         cmd_tasks   },
+    { "spawn",   "spawn N counter tasks     spawn <count>",      cmd_spawn   },
+    { "yield",   "voluntarily give up CPU",                      cmd_yield   },
+    { "user",    "run a ring-3 demo task",                       cmd_user    },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
 };
@@ -141,7 +163,7 @@ static void cmd_meminfo(int argc, char **argv) {
     uint32_t free_kb  = pmm_free_pages()  * (PAGE_SIZE / 1024);
     uint32_t used_kb  = total_kb - free_kb;
 
-    kprint_color("Memory Info\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("Physical Memory\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint("  Total : "); kprint_dec(total_kb / 1024); kprint(" MB\n");
     kprint("  Used  : "); kprint_dec(used_kb  / 1024); kprint(" MB\n");
     kprint("  Free  : "); kprint_dec(free_kb  / 1024); kprint(" MB\n");
@@ -157,6 +179,14 @@ static void cmd_meminfo(int argc, char **argv) {
     kprint("] ");
     kprint_dec(used_kb * 100 / total_kb);
     kprint("% used\n");
+
+    /* 힙 요약 한 줄 (자세히 보려면 'heap' 명령) */
+    kheap_stats_t hs;
+    kheap_get_stats(&hs);
+    kprint_color("Kernel Heap : ", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_dec(hs.used_bytes); kprint(" / ");
+    kprint_dec(hs.total_bytes); kprint(" bytes used");
+    kprint(" ("); kprint_dec(hs.blocks_used); kprint(" blocks)\n");
 }
 
 /* page — PMM 직접 테스트 */
@@ -338,7 +368,6 @@ static void cmd_ls(int argc, char **argv) {
 }
 
 #define CAT_BUF_SIZE 16384      /* 최대 16KB 텍스트 표시 */
-static uint8_t cat_buf[CAT_BUF_SIZE];
 
 static void cmd_cat(int argc, char **argv) {
     if (argc < 2) { kprint("usage: cat <path>\n"); return; }
@@ -367,17 +396,25 @@ static void cmd_cat(int argc, char **argv) {
         return;
     }
 
-    int n = fat32_read_file(&e, cat_buf, CAT_BUF_SIZE);
+    /* 매번 동적 할당 — 16KB BSS 정적 버퍼 제거. heap 부족 시 graceful fail. */
+    uint8_t *buf = (uint8_t *)kmalloc(CAT_BUF_SIZE);
+    if (!buf) {
+        kprint_color("cat: out of heap\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    int n = fat32_read_file(&e, buf, CAT_BUF_SIZE);
     if (n < 0) {
+        kfree(buf);
         kprint_color("read error\n", VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
     for (int i = 0; i < n; i++) {
-        char c = (char)cat_buf[i];
+        char c = (char)buf[i];
         if (c == '\r') continue;          /* CRLF → LF */
         kputchar(c);
     }
-    if (n > 0 && cat_buf[n - 1] != '\n') kputchar('\n');
+    if (n > 0 && buf[n - 1] != '\n') kputchar('\n');
+    kfree(buf);
 }
 
 /* touch <path> — 빈 파일 생성 */
@@ -403,7 +440,6 @@ static void cmd_touch(int argc, char **argv) {
 
 /* write <path> <text...> — argv[2..] 를 공백으로 합쳐 파일에 덮어쓰기 */
 #define WRITE_BUF_SIZE 8192
-static uint8_t write_buf[WRITE_BUF_SIZE];
 
 static void cmd_write(int argc, char **argv) {
     if (argc < 3) { kprint("usage: write <path> <text...>\n"); return; }
@@ -411,21 +447,30 @@ static void cmd_write(int argc, char **argv) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
 
+    uint8_t *buf = (uint8_t *)kmalloc(WRITE_BUF_SIZE);
+    if (!buf) {
+        kprint_color("write: out of heap\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
     uint32_t len = 0;
     for (int i = 2; i < argc; i++) {
-        if (i > 2 && len < WRITE_BUF_SIZE) write_buf[len++] = ' ';
+        if (i > 2 && len < WRITE_BUF_SIZE) buf[len++] = ' ';
         const char *s = argv[i];
-        while (*s && len < WRITE_BUF_SIZE) write_buf[len++] = (uint8_t)*s++;
+        while (*s && len < WRITE_BUF_SIZE) buf[len++] = (uint8_t)*s++;
     }
-    if (len < WRITE_BUF_SIZE) write_buf[len++] = '\n';
+    if (len < WRITE_BUF_SIZE) buf[len++] = '\n';
 
     uint32_t saved;
     char base[16];
     if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kfree(buf);
         kprint_color("write: invalid path\n", VGA_LIGHT_RED, VGA_BLACK); return;
     }
-    int r = fat32_write_file(base, write_buf, len);
+    int r = fat32_write_file(base, buf, len);
     fat32_set_cwd_cluster(saved);
+    kfree(buf);
+
     if (r < 0) {
         kprint_color("write failed (disk or directory full?)\n",
                      VGA_LIGHT_RED, VGA_BLACK);
@@ -604,15 +649,212 @@ static void cmd_pwd(int argc, char **argv) {
     kprint(cwd_path); kprint("\n");
 }
 
+/* ── 시간 / 디버그 명령 ─────────────────────────────────────────────────── */
+
+/* uptime — 시스템이 부팅 후 흐른 시간 (시:분:초) */
+static void cmd_uptime(int argc, char **argv) {
+    (void)argc; (void)argv;
+    uint32_t total = timer_uptime_seconds();
+    uint32_t hr = total / 3600;
+    uint32_t mn = (total / 60) % 60;
+    uint32_t sc = total % 60;
+
+    kprint("up ");
+    kprint_dec(hr); kprint("h ");
+    if (mn < 10) kputchar('0'); kprint_dec(mn); kprint("m ");
+    if (sc < 10) kputchar('0'); kprint_dec(sc); kprint("s   (");
+    kprint_dec(timer_ticks()); kprint(" ticks @ ");
+    kprint_dec(TIMER_HZ); kprint(" Hz)\n");
+}
+
+/* sleep <seconds> */
+static void cmd_sleep(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: sleep <seconds>\n"); return; }
+    uint32_t sec = parse_uint(argv[1]);
+    if (sec == 0) {
+        kprint("sleep: 0 seconds, returning immediately\n");
+        return;
+    }
+    if (sec > 3600) sec = 3600;          /* 안전 한도 — 셸이 너무 오래 멈추지 않도록 */
+    timer_sleep_ms(sec * 1000u);
+}
+
+/* ── 힙 관련 명령 ────────────────────────────────────────────────────────── */
+
+static void cmd_heap(int argc, char **argv) {
+    (void)argc; (void)argv;
+    kheap_stats_t s;
+    kheap_get_stats(&s);
+
+    kprint_color("Kernel Heap\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint("  Arena : "); kprint_dec(s.total_bytes); kprint(" bytes\n");
+    kprint("  Used  : "); kprint_dec(s.used_bytes ); kprint(" bytes (");
+    kprint_dec(s.blocks_used); kprint(" blocks)\n");
+    kprint("  Free  : "); kprint_dec(s.free_bytes ); kprint(" bytes (");
+    kprint_dec(s.blocks_free); kprint(" blocks)\n");
+    kprint("  Largest free block: "); kprint_dec(s.largest_free); kprint(" bytes\n");
+
+    /* 막대 그래프 — 32칸 */
+    if (s.total_bytes == 0) return;
+    kprint("  [");
+    /* 헤더가 차지하는 공간을 단순화하기 위해 used+free 비율로 그린다 */
+    uint32_t denom = s.used_bytes + s.free_bytes;
+    if (denom == 0) denom = 1;
+    int used_bars = (int)(s.used_bytes * 32u / denom);
+    for (int i = 0; i < 32; i++) {
+        if (i < used_bars) kprint_color("|", VGA_LIGHT_RED,   VGA_BLACK);
+        else               kprint_color("-", VGA_LIGHT_GREEN, VGA_BLACK);
+    }
+    kprint("] ");
+    kprint_dec(s.used_bytes * 100u / denom);
+    kprint("% used\n");
+}
+
+static void cmd_kalloc(int argc, char **argv) {
+    if (argc < 2) {
+        kprint("usage: kalloc alloc <bytes> | kalloc free <addr>\n");
+        return;
+    }
+    if (str_eq(argv[1], "alloc") && argc >= 3) {
+        uint32_t n = parse_uint(argv[2]);
+        void *p = kmalloc(n);
+        if (!p) {
+            kprint_color("kmalloc returned NULL (OOM)\n",
+                         VGA_LIGHT_RED, VGA_BLACK);
+            return;
+        }
+        kprint("kmalloc("); kprint_dec(n); kprint(") -> ");
+        kprint_hex((uint32_t)p); kprint("\n");
+    } else if (str_eq(argv[1], "free") && argc >= 3) {
+        uint32_t a = parse_uint(argv[2]);
+        kfree((void *)a);
+        kprint("kfree("); kprint_hex(a); kprint(") done\n");
+    } else {
+        kprint("usage: kalloc alloc <bytes> | kalloc free <addr>\n");
+    }
+}
+
+/* ── 멀티태스킹 명령 ─────────────────────────────────────────────────── */
+
+static const char *state_str(task_state_t s) {
+    switch (s) {
+        case TASK_RUNNING: return "RUN ";
+        case TASK_READY:   return "RDY ";
+        case TASK_ZOMBIE:  return "DEAD";
+        default:           return "????";
+    }
+}
+
+static void cmd_tasks(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!tasking_active()) {
+        kprint("multitasking not active\n");
+        return;
+    }
+    task_info_t info[16];
+    int n = task_list_snapshot(info, 16);
+    kprint_color("ID  STATE  TICKS    NAME\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    for (int i = 0; i < n; i++) {
+        if (info[i].is_current) kprint_color("*", VGA_LIGHT_GREEN, VGA_BLACK);
+        else                     kputchar(' ');
+        kprint(" ");
+        kprint_dec(info[i].id);
+        if (info[i].id < 10) kputchar(' ');
+        kprint("  ");
+        kprint(state_str(info[i].state));
+        kprint("   ");
+        kprint_dec(info[i].ticks_run);
+        int pad = 8 - 4;            /* 대략 정렬용 */
+        for (int j = 0; j < pad; j++) kputchar(' ');
+        kprint(info[i].name);
+        kputchar('\n');
+    }
+}
+
+/* spawn 으로 만들어지는 데모 카운터 task — 5초간 자기 ID 출력 후 종료 */
+static void counter_task(void) {
+    task_t *me = task_current();
+    /* 안전: 너무 빨리 부르면 스택에 me 가 stale 일 수 있어 매번 갱신 */
+    for (int i = 0; i < 5; i++) {
+        kprint("\n[T"); kprint_dec(me->id);
+        kprint(":"); kprint_dec(i); kprint("] tick from ");
+        kprint(me->name); kputchar('\n');
+        timer_sleep_ms(1000);
+    }
+    /* return 하면 task_start_trampoline 이 task_exit 호출 */
+}
+
+static void cmd_spawn(int argc, char **argv) {
+    if (argc < 2) {
+        kprint("usage: spawn <count>\n");
+        return;
+    }
+    if (!tasking_active()) {
+        kprint_color("multitasking not active\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    uint32_t n = parse_uint(argv[1]);
+    if (n == 0)  n = 1;
+    if (n > 8)   n = 8;
+
+    char nm[TASK_NAME_LEN];
+    for (uint32_t i = 0; i < n; i++) {
+        nm[0] = 'c'; nm[1] = 'n'; nm[2] = 't';
+        nm[3] = '-'; nm[4] = (char)('0' + (i % 10));
+        nm[5] = '\0';
+        task_t *t = task_create(nm, counter_task);
+        if (!t) {
+            kprint_color("spawn failed (kheap?)\n",
+                         VGA_LIGHT_RED, VGA_BLACK);
+            return;
+        }
+        kprint("spawned task #"); kprint_dec(t->id);
+        kprint(" '"); kprint(t->name); kprint("'\n");
+    }
+}
+
+static void cmd_yield(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!tasking_active()) {
+        kprint_color("multitasking not active\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    task_yield();
+    kprint("(back from yield)\n");
+}
+
+/* user — ring 3 데모 task 를 만든다.
+   user_demo_entry 가 syscall 만으로 화면 출력 + sleep + exit 진행. */
+static void cmd_user(int argc, char **argv) {
+    (void)argc; (void)argv;
+    if (!tasking_active()) {
+        kprint_color("multitasking not active\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    task_t *t = task_create_user("ring3-demo", user_demo_entry);
+    if (!t) {
+        kprint_color("failed to spawn user task (kheap?)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("spawned ring-3 task #"); kprint_dec(t->id);
+    kprint(" '"); kprint(t->name); kprint("'\n");
+}
+
 /* version */
 static void cmd_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprint_color("MyOS v0.9\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("MyOS v0.13\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint("  Arch  : x86 (i686), 32-bit protected mode + paging\n");
     kprint("  Kernel: custom bootloader + C kernel\n");
     kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell / paging\n");
-    kprint("        / FAT32 read+write + directories\n");
+    kprint("        / FAT32 / serial+PIT / kheap / multitasking\n");
+    kprint("        / user mode + syscalls (ring 3, INT 0x80)\n");
     kprint("  FS    : ls cat touch write rm mkdir rmdir cd pwd\n");
+    kprint("  Time  : uptime sleep   (PIT 100 Hz, COM1 115200 8N1)\n");
+    kprint("  Heap  : heap kalloc    (256 KB freelist, 8B align, coalesce)\n");
+    kprint("  Tasks : tasks spawn yield user (ring 0 + ring 3)\n");
+    kprint("  Sys   : exit write getpid sleep_ms (4 syscalls)\n");
 }
 
 /* halt */

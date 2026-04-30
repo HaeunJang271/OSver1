@@ -123,14 +123,19 @@ void paging_init(void) {
     for (int i = 0; i < 1024; i++) page_directory[i] = 0;
 
     /* 2) 첫 4MB identity map 을 위해 first_page_table 채우기.
-          PTE = phys | RW | PRESENT  (커널 전용이므로 USER 비트 없음) */
+          Phase 11 부터 USER 비트도 켠다 — ring 3 user task 가 자기 코드를
+          fetch 하려면 페이지가 user-accessible 이어야 하기 때문.
+          (보안상 커널 메모리도 ring 3 가 읽을 수 있게 되지만 학습용으론 OK.
+           ELF 로더 단계에서 user 영역을 별도 가상 주소로 분리할 예정.) */
     for (uint32_t i = 0; i < 1024; i++) {
         uint32_t phys = i * 0x1000;
-        first_page_table[i] = phys | PAGE_RW | PAGE_PRESENT;
+        first_page_table[i] = phys | PAGE_RW | PAGE_USER | PAGE_PRESENT;
     }
 
-    /* 3) PD[0] → first_page_table 연결 (가상 [0, 4MB) 커버) */
-    page_directory[0] = ((uint32_t)first_page_table) | PAGE_RW | PAGE_PRESENT;
+    /* 3) PD[0] → first_page_table 연결 (가상 [0, 4MB) 커버).
+          PD entry 도 USER 켜야 PT 의 USER 비트가 실제로 의미를 가짐. */
+    page_directory[0] = ((uint32_t)first_page_table)
+                       | PAGE_RW | PAGE_USER | PAGE_PRESENT;
 
     /* 4) PF 핸들러 등록 (PG 비트 켜기 전에 등록해두면 안전) */
     isr_register(14, page_fault_handler);

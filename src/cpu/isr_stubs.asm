@@ -77,6 +77,13 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
+; Syscall vector — INT 0x80 (128). idt.c 가 별도로 등록 (DPL=3 trap gate).
+global isr128
+isr128:
+    push dword 0       ; err_code (없음)
+    push dword 128     ; int_no
+    jmp isr_common
+
 ; Address table used by idt_init() to populate the IDT
 global isr_stub_table
 isr_stub_table:
