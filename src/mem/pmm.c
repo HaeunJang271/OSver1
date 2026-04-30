@@ -65,11 +65,15 @@ void pmm_init(void) {
     for (uint32_t i = 0; i < BITMAP_WORDS; i++)
         bitmap[i] = 0xFFFFFFFF;
 
-    /* e820 usable 영역을 가용으로 표시 */
-    uint16_t count = *E820_COUNT;
+    /* e820 usable 영역을 가용으로 표시
+       매크로를 직접 인덱싱하면 GCC -Warray-bounds가 false positive 경고를
+       내므로, 일단 로컬 포인터 변수에 담아 사용한다. */
+    volatile uint16_t *e820_count = E820_COUNT;
+    e820_entry_t      *e820_table = E820_TABLE;
+    uint16_t count = *e820_count;
     for (uint16_t i = 0; i < count; i++) {
-        if (E820_TABLE[i].type == E820_USABLE)
-            region_free(E820_TABLE[i].base, E820_TABLE[i].length);
+        if (e820_table[i].type == E820_USABLE)
+            region_free(e820_table[i].base, e820_table[i].length);
     }
 
     /* 첫 1 MB(커널, 부트로더, BIOS, e820 버퍼 포함)는 항상 예약 */

@@ -21,7 +21,8 @@ C_SRCS := src/kernel/kernel.c      \
           src/cpu/idt.c            \
           src/cpu/isr.c            \
           src/cpu/pic.c            \
-          src/mem/pmm.c
+          src/mem/pmm.c            \
+          src/shell/shell.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)
 CPU_ASM_SRCS := src/cpu/gdt_flush.asm \
@@ -33,7 +34,7 @@ CPU_ASM_OBJS := $(patsubst src/%.asm, $(BUILD)/%.o, $(CPU_ASM_SRCS))
 KENTRY_OBJ  := $(BUILD)/kernel_entry.o
 
 # ─── Build dirs ───────────────────────────────────────────────────────────────
-BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem
+BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem $(BUILD)/shell
 
 .PHONY: all run run-vnc debug clean
 
@@ -65,6 +66,9 @@ $(BUILD)/cpu/%.o: src/cpu/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/mem/%.o: src/mem/%.c | $(BUILD_DIRS)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/shell/%.o: src/shell/%.c | $(BUILD_DIRS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # ─── Link ─────────────────────────────────────────────────────────────────────
