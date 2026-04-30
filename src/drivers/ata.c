@@ -21,7 +21,9 @@
 #define ATA_SR_DRQ  0x08
 #define ATA_SR_ERR  0x01
 
-#define ATA_CMD_READ_PIO 0x20
+#define ATA_CMD_READ_PIO  0x20
+#define ATA_CMD_WRITE_PIO 0x30
+#define ATA_CMD_CACHE_FLUSH 0xE7
 
 /* 400ns 안정화: alt-status 4번 읽기 (Intel 권장) */
 static void ata_io_wait(void) {
@@ -73,5 +75,35 @@ int ata_read(uint8_t drive, uint32_t lba, uint8_t count, void *buf) {
         insw(ATA_REG_DATA, p, 256);
         p += 512;
     }
+    return 0;
+}
+
+int ata_write(uint8_t drive, uint32_t lba, uint8_t count, const void *buf) {
+    if (count == 0) return 0;
+    if (lba & 0xF0000000) return -1;
+
+    outb(ATA_REG_HDDEVSEL,
+         0xE0 | ((drive & 1) << 4) | ((lba >> 24) & 0x0F));
+    ata_io_wait();
+    while (inb(ATA_REG_STATUS) & ATA_SR_BSY) { /* spin */ }
+
+    outb(ATA_REG_FEATURES, 0);
+    outb(ATA_REG_SECCOUNT, count);
+    outb(ATA_REG_LBA0,  lba        & 0xFF);
+    outb(ATA_REG_LBA1, (lba >> 8)  & 0xFF);
+    outb(ATA_REG_LBA2, (lba >> 16) & 0xFF);
+    outb(ATA_REG_COMMAND, ATA_CMD_WRITE_PIO);
+
+    const uint8_t *p = (const uint8_t *)buf;
+    for (uint32_t s = 0; s < count; s++) {
+        if (ata_poll_data_ready() < 0) return -1;
+        outsw(ATA_REG_DATA, p, 256);
+        p += 512;
+    }
+
+    /* WRITE 후에는 cache flush 가 권장됨 (ATA 표준) */
+    outb(ATA_REG_COMMAND, ATA_CMD_CACHE_FLUSH);
+    ata_io_wait();
+    while (inb(ATA_REG_STATUS) & ATA_SR_BSY) { /* spin */ }
     return 0;
 }

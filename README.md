@@ -65,7 +65,8 @@ make debug    # GDB 디버그 모드 (포트 1234)
 - [x] **Phase 4** — 물리 메모리 관리자
 - [x] **Phase 5** — 기본 셸 (명령어 입력)
 - [x] **Phase 6** — 가상 메모리 / 페이징 (첫 4 MB identity map + PF 핸들러)
-- [x] **Phase 7** — 파일시스템 (FAT32 read-only, ATA PIO, ls/cat)
+- [x] **Phase 7** — 파일시스템 (FAT32 read+write + 디렉토리, ATA PIO,
+      ls/cat/touch/write/rm/mkdir/rmdir/cd/pwd)
 
 ## 참고 자료
 

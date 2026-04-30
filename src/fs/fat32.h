@@ -34,10 +34,48 @@ uint32_t fat32_root_cluster(void);
    LFN/볼륨라벨/삭제됨 항목은 자동 스킵. */
 void fat32_listdir(uint32_t start_cluster, fat32_visitor_t visit, void *ctx);
 
-/* 루트에서 8.3 이름(case-insensitive, 예: "hello.txt")으로 파일 검색.
+/* 현재 디렉토리(cwd) 에서 8.3 이름(case-insensitive)으로 검색.
    찾으면 *out 에 엔트리 복사 후 0 반환. 없으면 -1. */
+int  fat32_find(const char *name83, fat32_dirent_t *out);
+
+/* (호환용 별칭) 루트에서 검색. 사실상 cwd가 root 일 때 fat32_find 와 동일. */
 int  fat32_find_in_root(const char *name83, fat32_dirent_t *out);
 
 /* 디렉토리 엔트리가 가리키는 파일을 최대 max 바이트만큼 buf 에 복사.
    복사된 바이트 수 반환, 실패 시 -1. */
 int  fat32_read_file(const fat32_dirent_t *e, void *buf, uint32_t max);
+
+/* ── 쓰기 API (루트 디렉토리 한정) ─────────────────────────────────────────
+   모든 함수는 8.3 이름(case-insensitive 입력 OK, 내부에서 대문자 변환)을
+   사용한다. LFN(긴 파일이름)은 만들지 않는다. */
+
+/* 빈 파일을 새로 만든다. 같은 이름이 이미 있으면 -1. 성공 0. */
+int fat32_create(const char *name);
+
+/* 파일에 데이터를 덮어쓴다. 파일이 없으면 새로 만들고, 있으면 기존
+   클러스터 체인을 모두 해제한 뒤 다시 할당해서 쓴다. */
+int fat32_write_file(const char *name, const void *data, uint32_t size);
+
+/* 파일을 삭제한다(클러스터 체인 해제 + 디렉토리 엔트리 0xE5). */
+int fat32_remove(const char *name);
+
+/* ── 디렉토리 조작 ───────────────────────────────────────────────────────── */
+
+/* 빈 디렉토리 생성. 내부에 . 과 .. 엔트리를 자동으로 만든다. */
+int fat32_mkdir(const char *name);
+
+/* 비어있는 디렉토리 삭제(. / .. 외에 다른 엔트리가 있으면 실패).
+   파일에는 사용 불가 — 파일은 fat32_remove. */
+int fat32_rmdir(const char *name);
+
+/* ── 작업 디렉토리(cwd) ──────────────────────────────────────────────────── */
+
+/* 현재 디렉토리의 시작 클러스터 (마운트 시 root_cluster) */
+uint32_t fat32_cwd_cluster(void);
+
+/* cwd 변경. 다음 형태 모두 지원:
+     "/"      → 루트
+     ".."     → 부모 ( cwd 가 이미 루트면 그대로 )
+     "<dir>"  → 현재 디렉토리의 하위 디렉토리로 진입
+   대상이 디렉토리가 아니면 -1. 성공 0. */
+int  fat32_chdir(const char *name);

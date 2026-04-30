@@ -29,6 +29,13 @@ static inline void insw(uint16_t port, void *buf, uint32_t count) {
                       : "memory");
 }
 
+/* 디스크 PIO write: N 워드를 한 번에 쓰기 */
+static inline void outsw(uint16_t port, const void *buf, uint32_t count) {
+    __asm__ volatile ("rep outsw"
+                      : "+S"(buf), "+c"(count)
+                      : "d"(port));
+}
+
 /* ~1 µs delay via unused port — used when initializing hardware */
 static inline void io_wait(void) {
     outb(0x80, 0);

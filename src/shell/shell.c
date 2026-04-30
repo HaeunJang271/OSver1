@@ -72,6 +72,13 @@ static void cmd_vmap(int, char **);
 static void cmd_pftest(int, char **);
 static void cmd_ls(int, char **);
 static void cmd_cat(int, char **);
+static void cmd_touch(int, char **);
+static void cmd_write(int, char **);
+static void cmd_rm(int, char **);
+static void cmd_mkdir(int, char **);
+static void cmd_rmdir(int, char **);
+static void cmd_cd(int, char **);
+static void cmd_pwd(int, char **);
 static void cmd_version(int, char **);
 static void cmd_halt(int, char **);
 
@@ -83,8 +90,15 @@ static const cmd_t cmds[] = {
     { "page",    "alloc / free a page      page alloc|free <addr>", cmd_page },
     { "vmap",    "show v->p mapping        vmap <virt>",         cmd_vmap    },
     { "pf-test", "trigger a page fault",                         cmd_pftest  },
-    { "ls",      "list files in root (FAT32)",                   cmd_ls      },
+    { "ls",      "list files in current dir",                    cmd_ls      },
     { "cat",     "print a file             cat <name>",          cmd_cat     },
+    { "touch",   "create empty file        touch <name>",        cmd_touch   },
+    { "write",   "overwrite file content   write <name> <text>", cmd_write   },
+    { "rm",      "delete a file            rm <name>",           cmd_rm      },
+    { "mkdir",   "create a directory       mkdir <name>",        cmd_mkdir   },
+    { "rmdir",   "remove an empty dir      rmdir <name>",        cmd_rmdir   },
+    { "cd",      "change directory         cd <name>|..|/",      cmd_cd      },
+    { "pwd",     "print current path",                           cmd_pwd     },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
 };
@@ -241,7 +255,7 @@ static void cmd_ls(int argc, char **argv) {
         kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK);
         return;
     }
-    fat32_listdir(fat32_root_cluster(), ls_visitor, 0);
+    fat32_listdir(fat32_cwd_cluster(), ls_visitor, 0);
 }
 
 #define CAT_BUF_SIZE 16384      /* 최대 16KB 텍스트 표시 */
@@ -255,7 +269,7 @@ static void cmd_cat(int argc, char **argv) {
     }
 
     fat32_dirent_t e;
-    if (fat32_find_in_root(argv[1], &e) < 0) {
+    if (fat32_find(argv[1], &e) < 0) {
         kprint_color("not found: ", VGA_LIGHT_RED, VGA_BLACK);
         kprint(argv[1]); kprint("\n");
         return;
@@ -278,13 +292,168 @@ static void cmd_cat(int argc, char **argv) {
     if (n > 0 && cat_buf[n - 1] != '\n') kputchar('\n');
 }
 
+/* touch <name> — 빈 파일 생성 */
+static void cmd_touch(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: touch <name>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    if (fat32_create(argv[1]) < 0) {
+        kprint_color("touch failed (already exists or root full)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("created: "); kprint(argv[1]); kprint("\n");
+}
+
+/* write <name> <text...> — argv[2..] 를 공백으로 합쳐 파일에 덮어쓰기 */
+#define WRITE_BUF_SIZE 8192
+static uint8_t write_buf[WRITE_BUF_SIZE];
+
+static void cmd_write(int argc, char **argv) {
+    if (argc < 3) { kprint("usage: write <name> <text...>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+
+    uint32_t len = 0;
+    for (int i = 2; i < argc; i++) {
+        if (i > 2 && len < WRITE_BUF_SIZE) write_buf[len++] = ' ';
+        const char *s = argv[i];
+        while (*s && len < WRITE_BUF_SIZE) write_buf[len++] = (uint8_t)*s++;
+    }
+    if (len < WRITE_BUF_SIZE) write_buf[len++] = '\n';
+
+    if (fat32_write_file(argv[1], write_buf, len) < 0) {
+        kprint_color("write failed (disk full or root full?)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("wrote "); kprint_dec(len);
+    kprint(" bytes to "); kprint(argv[1]); kprint("\n");
+}
+
+/* rm <name> — 파일 삭제 */
+static void cmd_rm(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: rm <name>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    if (fat32_remove(argv[1]) < 0) {
+        kprint_color("rm failed (not found, or it's a directory?)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("removed: "); kprint(argv[1]); kprint("\n");
+}
+
+/* ── 디렉토리 + cwd 추적 ────────────────────────────────────────────────── */
+
+#define CWD_PATH_MAX 128
+static char cwd_path[CWD_PATH_MAX] = "/";
+
+/* 8.3 short name 을 셸 표기용으로 정리 ("FOO     TXT" → "FOO.TXT") */
+static void short_to_display(const char *src, char dst[13]) {
+    /* 입력은 사용자가 친 그대로(소문자 가능) — 우선 대문자로 변환 */
+    int n = 0;
+    int dot_seen = 0;
+    for (int i = 0; src[i] && n < 12; i++) {
+        char c = src[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if (c == '.') dot_seen = 1;
+        dst[n++] = c;
+    }
+    (void)dot_seen;
+    dst[n] = '\0';
+}
+
+static void path_push(const char *name) {
+    char up[13];
+    short_to_display(name, up);
+
+    int len = str_len(cwd_path);
+    int add = str_len(up);
+    /* 슬래시 1개 + 이름 + NUL */
+    if (len + 1 + add + 1 >= CWD_PATH_MAX) return;
+    if (!(len == 1 && cwd_path[0] == '/')) {
+        cwd_path[len++] = '/';
+    }
+    for (int i = 0; i < add; i++) cwd_path[len++] = up[i];
+    cwd_path[len] = '\0';
+}
+
+static void path_pop(void) {
+    int len = str_len(cwd_path);
+    if (len <= 1) { cwd_path[0] = '/'; cwd_path[1] = '\0'; return; }
+    /* 뒤에서 '/' 까지 자르기 */
+    while (len > 1 && cwd_path[len - 1] != '/') len--;
+    if (len > 1) len--;          /* 그 슬래시도 제거 */
+    cwd_path[len] = '\0';
+    if (cwd_path[0] == '\0') { cwd_path[0] = '/'; cwd_path[1] = '\0'; }
+}
+
+static void cmd_mkdir(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: mkdir <name>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    if (fat32_mkdir(argv[1]) < 0) {
+        kprint_color("mkdir failed (exists, full, or out of space)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("created dir: "); kprint(argv[1]); kprint("\n");
+}
+
+static void cmd_rmdir(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: rmdir <name>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    if (fat32_rmdir(argv[1]) < 0) {
+        kprint_color("rmdir failed (not a dir, or not empty)\n",
+                     VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("removed dir: "); kprint(argv[1]); kprint("\n");
+}
+
+static void cmd_cd(int argc, char **argv) {
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    const char *target = (argc < 2) ? "/" : argv[1];
+
+    if (fat32_chdir(target) < 0) {
+        kprint_color("cd failed: ", VGA_LIGHT_RED, VGA_BLACK);
+        kprint(target); kprint("\n");
+        return;
+    }
+
+    /* path 문자열 갱신 */
+    if (target[0] == '/' && target[1] == '\0') {
+        cwd_path[0] = '/'; cwd_path[1] = '\0';
+    } else if (target[0] == '.' && target[1] == '.' && target[2] == '\0') {
+        path_pop();
+    } else if (!(target[0] == '.' && target[1] == '\0')) {
+        path_push(target);
+    }
+}
+
+static void cmd_pwd(int argc, char **argv) {
+    (void)argc; (void)argv;
+    kprint(cwd_path); kprint("\n");
+}
+
 /* version */
 static void cmd_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprint_color("MyOS v0.7\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("MyOS v0.9\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint("  Arch  : x86 (i686), 32-bit protected mode + paging\n");
     kprint("  Kernel: custom bootloader + C kernel\n");
-    kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell / paging / FAT32\n");
+    kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell / paging\n");
+    kprint("        / FAT32 read+write + directories\n");
+    kprint("  FS    : ls cat touch write rm mkdir rmdir cd pwd\n");
 }
 
 /* halt */
@@ -350,6 +519,7 @@ void shell_run(void) {
     kprint("type 'help' for commands\n\n");
 
     for (;;) {
+        kprint_color(cwd_path, VGA_LIGHT_GREEN, VGA_BLACK);
         kprint_color("> ", VGA_LIGHT_GREEN, VGA_BLACK);
         readline(line, LINE_MAX);
         exec(line);
