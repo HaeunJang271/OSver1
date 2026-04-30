@@ -1,4 +1,5 @@
 #include "task.h"
+#include "elf.h"
 #include "../mem/kheap.h"
 #include "../drivers/screen.h"
 #include "../cpu/tss.h"
@@ -48,6 +49,7 @@ static void ready_remove(task_t *target) {
 /* ZOMBIE 노드를 ready 큐에서 떼고 메모리 해제 */
 static void reap(task_t *t) {
     ready_remove(t);
+    if (t->image)           elf_unload(t->image);   /* unmap + pmm_free + kfree image */
     if (t->stack_base)      kfree(t->stack_base);
     if (t->user_stack_base) kfree(t->user_stack_base);
     kfree(t);
@@ -68,6 +70,7 @@ void tasking_init(void) {
     boot->kernel_stack_top = 0;
     boot->is_user          = 0;
     boot->user_stack_base  = (void *)0;
+    boot->image            = (struct user_image *)0;
     boot->ticks_run        = 0;
     boot->slice_left       = TASK_TIME_SLICE;
     boot->next             = boot;             /* 자기 자신 */
@@ -101,6 +104,7 @@ task_t *task_create(const char *name, void (*entry)(void)) {
     t->kernel_stack_top = (uint32_t)stack + TASK_STACK_SIZE;
     t->is_user          = 0;
     t->user_stack_base  = (void *)0;
+    t->image            = (struct user_image *)0;
     t->ticks_run        = 0;
     t->slice_left       = TASK_TIME_SLICE;
 
@@ -166,6 +170,7 @@ task_t *task_create_user(const char *name, void (*entry)(void)) {
     t->kernel_stack_top = kstack_top;
     t->is_user          = 1;
     t->user_stack_base  = ustack;
+    t->image            = (struct user_image *)0;
     t->ticks_run        = 0;
     t->slice_left       = TASK_TIME_SLICE;
 
@@ -194,6 +199,15 @@ task_t *task_create_user(const char *name, void (*entry)(void)) {
         ready_insert_after_current(t);
     }
     __asm__ volatile ("sti");
+    return t;
+}
+
+/* ── exec — 적재된 ELF 이미지로 ring 3 task 생성 ─────────────────────── */
+task_t *task_create_user_image(const char *name, struct user_image *image) {
+    if (!image) return (task_t *)0;
+    task_t *t = task_create_user(name, (void (*)(void))((user_image_t *)image)->entry);
+    if (!t) return (task_t *)0;
+    t->image = image;     /* reap 시 elf_unload 자동 호출 */
     return t;
 }
 

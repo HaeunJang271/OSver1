@@ -1,8 +1,7 @@
 #pragma once
 #include "../include/types.h"
-#include "../cpu/isr.h"
 
-/* ── 시스템콜 번호 ─────────────────────────────────────────────────────── */
+/* ── 시스템콜 번호 (user/kernel 양쪽 모두 사용) ───────────────────────── */
 #define SYS_EXIT      0
 #define SYS_WRITE     1
 #define SYS_GETPID    2
@@ -10,13 +9,9 @@
 
 #define SYS_MAX       4
 
-/* ── 커널측 디스패처 ──────────────────────────────────────────────────── */
-/* isr.c 가 INT 0x80 진입 시 호출. regs->eax = num, ebx/ecx/edx = args.
-   결과는 regs->eax 에 써넣어 ring 3 의 eax 로 돌려준다. */
-void syscall_dispatch(registers_t *regs);
-
 /* ── ring 3 inline wrappers ──────────────────────────────────────────────
-   ring 3 user 함수 안에서 사용. cdecl 안 거치고 곧장 INT 0x80. */
+   user-side 코드(예: src/userland/*.c, src/proc/user_demo.c)가 직접
+   사용한다. cdecl 함수 호출 거치지 않고 INT 0x80 으로 직행. */
 
 static inline int32_t syscall0(uint32_t num) {
     int32_t r;

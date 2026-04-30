@@ -2,7 +2,7 @@
 #include "pic.h"
 #include "../drivers/screen.h"
 #include "../proc/task.h"
-#include "../proc/syscall.h"
+#include "../proc/syscall_kernel.h"
 
 static isr_handler_t handlers[256];
 

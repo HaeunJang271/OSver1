@@ -1,4 +1,5 @@
 #include "syscall.h"
+#include "syscall_kernel.h"
 #include "task.h"
 #include "../drivers/screen.h"
 #include "../drivers/timer.h"

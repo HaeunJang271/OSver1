@@ -75,9 +75,11 @@ make debug    # GDB 디버그 모드 (포트 1234)
       PIT IRQ 기반 선점 라운드로빈, 50ms time slice)
 - [x] **Phase 11** — 유저 모드 + 시스템콜 (Ring 3, GDT user descriptors,
       TSS, `int 0x80` 시스템콜 디스패처)
-- [ ] **Phase 12** — ELF 로더 + 사용자 프로그램 실행
-      (FAT32에서 ELF32 적재 → ring 3 진입, `exec /bin/hello.elf`)
-      → **여기까지가 mini-Unix**
+- [x] **Phase 12** — ELF 로더 + 사용자 프로그램 실행
+      (FAT32에서 ELF32 적재 → vmm_map(0x40000000) + USER 페이지 →
+       ring 3 진입, `exec /HELLO.ELF`)
+      → **여기까지가 mini-Unix** ✓ **달성!**
+      
 - [ ] **Phase 13** — VESA 그래픽 모드 + 비트맵 폰트 렌더러
       (320×200 또는 1024×768, 픽셀 출력, 한글 폰트)
 - [ ] **Phase 14** — 마우스 드라이버(PS/2) + 이벤트 시스템

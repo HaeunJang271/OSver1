@@ -84,7 +84,10 @@ static uint32_t *get_pt(uint32_t virt, int create) {
     uint32_t *new_pt = (uint32_t *)pt;
     for (int i = 0; i < 1024; i++) new_pt[i] = 0;
 
-    page_directory[pdi] = ((uint32_t)pt) | PAGE_PRESENT | PAGE_RW;
+    /* PD entry 에도 USER 비트를 켜둬야 ring 3 가 이 PT 가 커버하는 영역에
+       접근 가능. 실제 권한은 PT entry 의 USER 비트가 최종 결정한다 — PD는
+       단지 컨테이너 역할이라 가장 관대한 권한으로 둬도 안전. */
+    page_directory[pdi] = ((uint32_t)pt) | PAGE_PRESENT | PAGE_RW | PAGE_USER;
     return new_pt;
 }
 

@@ -7,6 +7,7 @@
 #include "../mem/kheap.h"
 #include "../fs/fat32.h"
 #include "../proc/task.h"
+#include "../proc/elf.h"
 
 #define LINE_MAX  256
 #define ARGS_MAX  16
@@ -90,6 +91,7 @@ static void cmd_tasks(int, char **);
 static void cmd_spawn(int, char **);
 static void cmd_yield(int, char **);
 static void cmd_user(int, char **);
+static void cmd_exec(int, char **);
 static void cmd_version(int, char **);
 static void cmd_halt(int, char **);
 
@@ -121,6 +123,7 @@ static const cmd_t cmds[] = {
     { "spawn",   "spawn N counter tasks     spawn <count>",      cmd_spawn   },
     { "yield",   "voluntarily give up CPU",                      cmd_yield   },
     { "user",    "run a ring-3 demo task",                       cmd_user    },
+    { "exec",    "load an ELF and run it      exec <path>",      cmd_exec    },
     { "version", "show OS version info",                         cmd_version },
     { "halt",    "halt the system",                              cmd_halt    },
 };
@@ -841,20 +844,92 @@ static void cmd_user(int argc, char **argv) {
     kprint(" '"); kprint(t->name); kprint("'\n");
 }
 
+/* exec — FAT32 에서 ELF 파일을 읽어 ring 3 task 로 실행한다. */
+static void cmd_exec(int argc, char **argv) {
+    if (argc < 2) { kprint("usage: exec <path>\n"); return; }
+    if (!fat32_is_mounted()) {
+        kprint_color("FAT32 not mounted.\n", VGA_LIGHT_RED, VGA_BLACK); return;
+    }
+    if (!tasking_active()) {
+        kprint_color("multitasking not active\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
+    /* 1) 파일 찾기 (path → cwd 임시 이동 + basename 검색) */
+    uint32_t saved;
+    char base[16];
+    if (path_to_parent_and_base(argv[1], &saved, base) < 0) {
+        kprint_color("exec: invalid path\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    fat32_dirent_t e;
+    int rc = fat32_find(base, &e);
+    fat32_set_cwd_cluster(saved);
+
+    if (rc < 0) {
+        kprint_color("exec: not found: ", VGA_LIGHT_RED, VGA_BLACK);
+        kprint(argv[1]); kprint("\n");
+        return;
+    }
+    if (e.attr & FAT_ATTR_DIRECTORY) {
+        kprint_color("exec: is a directory\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    if (e.size == 0) {
+        kprint_color("exec: empty file\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
+    /* 2) 파일 전체를 힙에 읽기 */
+    uint8_t *buf = (uint8_t *)kmalloc(e.size);
+    if (!buf) {
+        kprint_color("exec: out of heap\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    int n = fat32_read_file(&e, buf, e.size);
+    if (n < 0 || (uint32_t)n != e.size) {
+        kfree(buf);
+        kprint_color("exec: read error\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+
+    /* 3) ELF 파싱 + LOAD 세그먼트 매핑 */
+    user_image_t *img = (user_image_t *)0;
+    int er = elf_load(buf, e.size, &img);
+    kfree(buf);
+    if (er < 0) {
+        kprint_color("exec: not a valid i386 ELF (rc=", VGA_LIGHT_RED, VGA_BLACK);
+        kprint_dec((uint32_t)(-er)); kprint(")\n");
+        return;
+    }
+
+    /* 4) ring 3 task 생성 */
+    task_t *t = task_create_user_image(argv[1], img);
+    if (!t) {
+        elf_unload(img);
+        kprint_color("exec: failed to spawn task\n", VGA_LIGHT_RED, VGA_BLACK);
+        return;
+    }
+    kprint("exec: pid="); kprint_dec(t->id);
+    kprint(" entry="); kprint_hex(img->entry);
+    kprint(" segs="); kprint_dec(img->seg_count); kprint("\n");
+}
+
 /* version */
 static void cmd_version(int argc, char **argv) {
     (void)argc; (void)argv;
-    kprint_color("MyOS v0.13\n", VGA_LIGHT_CYAN, VGA_BLACK);
+    kprint_color("MyOS v1.0  (mini-Unix milestone)\n", VGA_LIGHT_CYAN, VGA_BLACK);
     kprint("  Arch  : x86 (i686), 32-bit protected mode + paging\n");
     kprint("  Kernel: custom bootloader + C kernel\n");
     kprint("  Phases: boot / GDT+IDT / keyboard / PMM / shell / paging\n");
     kprint("        / FAT32 / serial+PIT / kheap / multitasking\n");
-    kprint("        / user mode + syscalls (ring 3, INT 0x80)\n");
+    kprint("        / user mode + syscalls / ELF loader\n");
     kprint("  FS    : ls cat touch write rm mkdir rmdir cd pwd\n");
     kprint("  Time  : uptime sleep   (PIT 100 Hz, COM1 115200 8N1)\n");
     kprint("  Heap  : heap kalloc    (256 KB freelist, 8B align, coalesce)\n");
-    kprint("  Tasks : tasks spawn yield user (ring 0 + ring 3)\n");
+    kprint("  Tasks : tasks spawn yield user exec  (ring 0 + ring 3)\n");
     kprint("  Sys   : exit write getpid sleep_ms (4 syscalls)\n");
+    kprint("  Exec  : ELF32 PT_LOAD -> 0x40000000 (vmm_map + USER pages)\n");
 }
 
 /* halt */

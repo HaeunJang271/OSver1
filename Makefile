@@ -32,6 +32,7 @@ C_SRCS := src/kernel/kernel.c      \
           src/proc/task.c          \
           src/proc/syscall.c       \
           src/proc/user_demo.c     \
+          src/proc/elf.c           \
           src/shell/shell.c
 
 # Extra ASM objects (beyond kernel_entry.o which is handled separately)
@@ -46,11 +47,20 @@ KENTRY_OBJ  := $(BUILD)/kernel_entry.o
 
 # ─── Build dirs ───────────────────────────────────────────────────────────────
 BUILD_DIRS := $(BUILD)/kernel $(BUILD)/drivers $(BUILD)/cpu $(BUILD)/mem \
-              $(BUILD)/fs $(BUILD)/proc $(BUILD)/shell
+              $(BUILD)/fs $(BUILD)/proc $(BUILD)/shell $(BUILD)/userland
 
-.PHONY: all run run-vnc debug clean data
+# ─── Userland (Phase 12: 별도 ELF 사용자 프로그램) ─────────────────────────
+USER_CFLAGS  := -ffreestanding -fno-builtin -fno-stack-protector -fno-pie \
+                -nostdlib -Wall -Wextra -m32 -O2 -I src
+USER_LDFLAGS := -T src/userland/userland.ld -melf_i386 --no-pie
+
+USER_PROGS := $(BUILD)/userland/hello.elf
+
+.PHONY: all run run-vnc debug clean data userland
 
 all: $(BUILD)/os.img $(BUILD)/data.img
+
+userland: $(USER_PROGS)
 
 $(BUILD_DIRS):
 	mkdir -p $@
@@ -106,16 +116,31 @@ $(BUILD)/os.img: $(BUILD)/boot.bin $(BUILD)/kernel.bin
 	dd if=$(BUILD)/kernel.bin of=$@ seek=1 conv=notrunc  2>/dev/null
 	@echo "Built: $@"
 
+# ─── Userland ELF 빌드 룰 ──────────────────────────────────────────────────
+# crt0.S + 각 프로그램의 main.c → 정적 링크된 ELF (가상 0x40000000 시작)
+
+$(BUILD)/userland/crt0.o: src/userland/crt0.S | $(BUILD_DIRS)
+	$(CC) $(USER_CFLAGS) -c -o $@ $<
+
+$(BUILD)/userland/%.o: src/userland/%.c | $(BUILD_DIRS)
+	$(CC) $(USER_CFLAGS) -c -o $@ $<
+
+$(BUILD)/userland/%.elf: $(BUILD)/userland/crt0.o $(BUILD)/userland/%.o \
+                         src/userland/userland.ld | $(BUILD_DIRS)
+	$(LD) $(USER_LDFLAGS) -o $@ $(BUILD)/userland/crt0.o $(BUILD)/userland/$*.o
+	@echo "Built userland: $@"
+
 # ─── FAT32 데이터 디스크 (64 MB, secondary IDE) ───────────────────────────────
 # 필요 도구: dosfstools(mkfs.fat) + mtools(mcopy)
 #   sudo apt install dosfstools mtools
 DATA_FILES := $(wildcard disk_files/*)
 
-$(BUILD)/data.img: $(DATA_FILES) | $(BUILD_DIRS)
+$(BUILD)/data.img: $(DATA_FILES) $(USER_PROGS) | $(BUILD_DIRS)
 	dd if=/dev/zero of=$@ bs=1M count=64 status=none
 	mkfs.fat -F 32 -n MYOSDATA $@ >/dev/null
 	@for f in $(DATA_FILES); do mcopy -i $@ "$$f" ::; done
-	@echo "Built: $@  (FAT32 64MB)"
+	@for f in $(USER_PROGS); do mcopy -i $@ "$$f" ::; done
+	@echo "Built: $@  (FAT32 64MB, $(words $(DATA_FILES)) data + $(words $(USER_PROGS)) elf)"
 
 data: $(BUILD)/data.img
 
